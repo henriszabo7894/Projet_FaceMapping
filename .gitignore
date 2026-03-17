@@ -6,3 +6,6 @@ __pycache__/
 .env
 commands_history.txt
 .DS_Store
+
+weights/
+debug_tensor_output.jpg

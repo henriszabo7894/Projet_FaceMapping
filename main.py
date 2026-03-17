@@ -34,7 +34,17 @@ def main():
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
     else:
         source_image = cv2.imread(source_img_path)
-        print(f"[+] Source chargée : {source_img_path} (Shape: {source_image.shape})")
+        
+        # Recadrage : centrer sur le visage (moitié supérieure)
+        h, w = source_image.shape[:2]
+        crop_size = min(h, w)
+        start_y = max(0, int((h - crop_size) * 0.2)) # Décalé vers le haut pour le visage
+        start_x = (w - crop_size) // 2
+        source_image = source_image[start_y:start_y+crop_size, start_x:start_x+crop_size]
+        
+        # Redimensionnement vital pour éviter la saturation du CPU/GPU (La Joconde utilisée faisant 9Kx6K pixels)
+        source_image = cv2.resize(source_image, (512, 512))
+        print(f"[+] Source chargée, recadrée et redimensionnée à 512x512 : {source_img_path} (Shape: {source_image.shape})")
 
     # 3. Initialisation du Flux Input Webcam (Idéalement /dev/video0)
     print("\n[*] Initialisation de la capture Webcam...")
@@ -53,7 +63,9 @@ def main():
     # 4. Boucle Principale
     print("[+] Début du Streaming (Appuyez sur 'q' ou 'ESC' pour quitter).")
     prev_time = time.time()
-    
+    frame_counter = 0
+    frame_counter = 0  # Sonde 4 : compteur de frames pour prouver l'animation est en direct
+
     try:
         while True:
             # --- PHASE I/O : Acquisition ---
@@ -65,11 +77,16 @@ def main():
             # Miroir l'image de la webcam pour un comportement naturel
             driving_frame = cv2.flip(driving_frame, 1)
 
+            # Resize Webcam to match Source for tensor operations
+            h_s, w_s = source_image.shape[:2]
+            driving_frame_resized = cv2.resize(driving_frame, (w_s, h_s))
+
             # --- PHASE IA : Génération (Le Cerveau) ---
             # Bloquant par nature, d'où l'importance de CUDA
             t_inference_start = time.time()
-            generated_img = animator.generate_frame(source_image, driving_frame)
+            result_frame = animator.generate_frame(source_image, driving_frame_resized)
             t_inference_end = time.time()
+            frame_counter += 1
 
             # --- PHASE PERFORMANCES : Monitorer la RTX 5080 ---
             curr_time = time.time()
@@ -79,23 +96,35 @@ def main():
             # Temps brut d'inférence GPU en ms (Network Forward Pass + Tensors Cpy)
             latency_ms = (t_inference_end - t_inference_start) * 1000
 
+            # ================================================================
+            # SONDE 4 — AFFICHAGE (main.py)
+            # On incrusté le compteur de frames DIRECTEMENT sur result_frame,
+            # le retour BRUT de generate_frame, avant tout resize.
+            # Si le compteur avance mais que l'image est figée => bug de
+            # conversion/stitching. Si le compteur est figé => boucle morte.
+            # ================================================================
+            cv2.putText(
+                result_frame,
+                f"[AUDIT] Frame #{frame_counter}",
+                (10, result_frame.shape[0] - 15),   # Coin bas-gauche
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (0, 255, 255),  # Cyan bien visible
+                2
+            )
+
             # --- PHASE I/O : Rendu & GUI ---
-            # Affichage de l'UI (Incrustations textuelles performantes)
-            text_color = (0, 255, 0) if fps > 20 else (0, 0, 255) # Vert si >20fps, sinon rouge
-            cv2.putText(generated_img, f"Artimir 2.0 (RTX 5080)", (10, 30), 
+            # Incrustations UI sur la frame brute avant affichage
+            text_color = (0, 255, 0) if fps > 20 else (0, 0, 255)
+            cv2.putText(result_frame, f"Artimir 2.0 (RTX 5080)", (10, 30),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
-            cv2.putText(generated_img, f"FPS: {int(fps)}", (10, 70), 
+            cv2.putText(result_frame, f"FPS: {int(fps)}", (10, 70),
                         cv2.FONT_HERSHEY_SIMPLEX, 1, text_color, 2)
-            cv2.putText(generated_img, f"Inference Latency: {int(latency_ms)} ms", (10, 100), 
+            cv2.putText(result_frame, f"Inference Latency: {int(latency_ms)} ms", (10, 100),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
 
-            # Assemblage côte à côte optionnel pour visualisation complète (Webcam + Resultat)
-            # Resize Webcam to match Source for stacking
-            h_g, w_g = generated_img.shape[:2]
-            driving_resized = cv2.resize(driving_frame, (w_g, h_g))
-            combined_view = cv2.hconcat([driving_resized, generated_img])
-
-            cv2.imshow("Artimir 2.0 - Live Portrait Animation", combined_view)
+            # Sonde 4 : on s'assure que la variable passée à imshow est strictement le retour de generate_frame
+            cv2.imshow("LivePortrait", result_frame)
 
             # --- Sortie ---
             key = cv2.waitKey(1) & 0xFF
